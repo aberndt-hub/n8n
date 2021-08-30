@@ -1,3 +1,6 @@
+/* eslint-disable @typescript-eslint/no-non-null-assertion */
+/* eslint-disable no-restricted-globals */
+/* eslint-disable import/no-cycle */
 /* eslint-disable @typescript-eslint/restrict-template-expressions */
 /* eslint-disable @typescript-eslint/no-unsafe-return */
 /* eslint-disable no-param-reassign */
@@ -8,10 +11,11 @@ import { join as pathJoin } from 'path';
 import { readFile as fsReadFile } from 'fs/promises';
 import { readFileSync as fsReadFileSync } from 'fs';
 import { IDataObject } from 'n8n-workflow';
+import { Like } from 'typeorm';
 import * as config from '../config';
 
-// eslint-disable-next-line import/no-cycle
-import { IPackageVersions } from '.';
+import { Db, ICredentialsDb, IPackageVersions } from '.';
+import { WorkflowEntity } from './databases/entities/WorkflowEntity';
 
 let versionCache: IPackageVersions | undefined;
 
@@ -169,4 +173,56 @@ export function getConfigValueSync(configKey: string): string | boolean | number
 	}
 
 	return data;
+}
+
+/**
+ * Generate a unique name for a workflow or credentials entity.
+ *
+ * - If the name does not yet exist, it returns the requested name.
+ * - If the name already exists once, it returns the requested name suffixed with 2.
+ * - If the name already exists more than once with suffixes, it looks for the max suffix
+ * and returns the requested name with max suffix + 1.
+ */
+// eslint-disable-next-line @typescript-eslint/explicit-module-boundary-types
+export async function generateUniqueName(
+	requestedName: string,
+	entityType: 'workflow' | 'credentials',
+) {
+	const findConditions = {
+		select: ['name' as const],
+		where: {
+			name: Like(`${requestedName}%`),
+		},
+	};
+
+	const found: Array<WorkflowEntity | ICredentialsDb> =
+		entityType === 'workflow'
+			? await Db.collections.Workflow!.find(findConditions)
+			: await Db.collections.Credentials!.find(findConditions);
+
+	// name is unique
+	if (found.length === 0) {
+		return { name: requestedName };
+	}
+
+	const maxSuffix = found.reduce((acc, { name }) => {
+		const parts = name.split(`${requestedName} `);
+
+		if (parts.length > 2) return acc;
+
+		const suffix = Number(parts[1]);
+
+		if (!isNaN(suffix) && Math.ceil(suffix) > acc) {
+			acc = Math.ceil(suffix);
+		}
+
+		return acc;
+	}, 0);
+
+	// name is duplicate but no numeric suffixes exist yet
+	if (maxSuffix === 0) {
+		return { name: `${requestedName} 2` };
+	}
+
+	return { name: `${requestedName} ${maxSuffix + 1}` };
 }
